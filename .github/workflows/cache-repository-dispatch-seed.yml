@@ -239,6 +239,26 @@ jobs:
           }
           OIDCNODE
           fi
+          if [[ "\${LAB_ATTESTATION_PROOF:-false}" == "true" ]]; then
+            mkdir -p dist
+            {
+              echo "artifact-attestation-pollution=true"
+              echo "artifact-source=restored-cache-tool"
+              echo "tool-label=issue-comment-repository-dispatch-tool"
+              echo "tool-cache-key=${CACHE_KEY}"
+              echo "tool-source=low-trust-issue-comment-via-repository-dispatch"
+              echo "comment-actor=${COMMENT_ACTOR}"
+              echo "comment-id=${COMMENT_ID}"
+              echo "source-issue-comment-run-id=${SOURCE_RUN_ID}"
+              echo "trusted-run-id=\${GITHUB_RUN_ID}"
+              echo "trusted-workflow=\${GITHUB_WORKFLOW}"
+              echo "trusted-ref=\${GITHUB_REF}"
+              echo "trusted-sha=\${GITHUB_SHA}"
+              echo "github-repository=\${GITHUB_REPOSITORY}"
+            } > dist/provenance-polluted.txt
+            sha256sum dist/provenance-polluted.txt | tee dist/provenance-polluted.txt.sha256
+            echo "attestation-proof-artifact=dist/provenance-polluted.txt"
+          fi
           EOF
           chmod +x deploy-tools/deploy.sh
           printf 'prepare-ran=true\ncache-key=%s\n' "$CACHE_KEY" | tee observations/prepared.txt

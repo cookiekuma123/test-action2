@@ -1,0 +1,153 @@
+name: Cache Attestation Provenance No Restore Impact
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_key:
+        description: ASCII base key. Trusted primary is <base>-prod; hidden seed is expected to be <base>-prod<U+200B>.
+        required: true
+        default: attestation-no-restore
+
+permissions:
+  actions: write
+  attestations: write
+  contents: read
+  id-token: write
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve no-restore attestation key
+        id: key
+        shell: bash
+        env:
+          BASE_KEY: ${{ inputs.base_key }}
+        run: |
+          set -euo pipefail
+          mkdir -p observations
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          function describe(value) {
+            return {
+              value,
+              length: value.length,
+              byteLength: Buffer.byteLength(value),
+              utf8Hex: Buffer.from(value, 'utf8').toString('hex'),
+              codePoints: [...value].map(char =>
+                `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`
+              )
+            };
+          }
+
+          const base = process.env.BASE_KEY || '';
+          const primaryKey = `${base}-prod`;
+          const expectedHiddenKey = `${primaryKey}\u200b`;
+          const metadata = {
+            event: 'workflow_dispatch',
+            primaryKey: describe(primaryKey),
+            expectedHiddenKey: describe(expectedHiddenKey),
+            restoreKeys: [],
+            runId: process.env.GITHUB_RUN_ID
+          };
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `primary_key<<EOF\n${primaryKey}\nEOF\n`);
+          fs.writeFileSync('observations/no-restore-attestation-key.json', `${JSON.stringify(metadata, null, 2)}\n`);
+          NODE
+
+      - name: Restore deploy tool cache without restore-keys
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: deploy-tools
+          key: ${{ steps.key.outputs.primary_key }}
+
+      - name: Record cache outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p observations
+          {
+            echo "restore-keys-used=false"
+            echo "cache-hit=${{ steps.cache.outputs.cache-hit }}"
+            echo "cache-primary-key=${{ steps.cache.outputs.cache-primary-key }}"
+            echo "cache-matched-key=${{ steps.cache.outputs.cache-matched-key }}"
+            echo "trusted-primary-key=${{ steps.key.outputs.primary_key }}"
+          } | tee observations/cache-outputs.txt
+
+      - name: Stop unless exact cache hit is reported
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "exact-cache-required=true" | tee observations/exact-gate-failed.txt
+          exit 1
+
+      - name: Build artifact using restored cached tool
+        shell: bash
+        env:
+          LAB_ATTESTATION_PROOF: "true"
+        run: |
+          set -euo pipefail
+          mkdir -p observations
+          if [[ -x deploy-tools/deploy.sh ]]; then
+            ./deploy-tools/deploy.sh | tee observations/cached-tool-output.txt
+          else
+            printf 'deploy-tool-missing=true\n' | tee observations/cached-tool-output.txt
+            exit 1
+          fi
+          test -f dist/provenance-polluted.txt
+          sha256sum dist/provenance-polluted.txt | tee observations/provenance-polluted.sha256
+          cp dist/provenance-polluted.txt observations/provenance-polluted.txt
+
+      - name: Upload polluted build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: provenance-polluted-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/provenance-polluted.txt
+          if-no-files-found: error
+
+      - name: Attest polluted build artifact
+        id: attest
+        uses: actions/attest-build-provenance@v4.1.1
+        with:
+          subject-path: dist/provenance-polluted.txt
+
+      - name: Verify uploaded provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p observations
+          {
+            echo "attestation-id=${ATTESTATION_ID}"
+            echo "attestation-url=${ATTESTATION_URL}"
+            echo "bundle-path=${BUNDLE_PATH}"
+          } | tee observations/attestation-outputs.txt
+          if [[ -n "${BUNDLE_PATH}" && -f "${BUNDLE_PATH}" ]]; then
+            cp "${BUNDLE_PATH}" observations/attestation-bundle.json
+          fi
+          gh attestation verify dist/provenance-polluted.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            | tee observations/gh-attestation-verify.txt
+
+      - name: Inspect observations
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find deploy-tools dist observations -maxdepth 3 -type f -print -exec sed -n '1,120p' {} \; || true
+
+      - name: Upload observations
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cache-attestation-provenance-no-restore-impact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: observations/
+          if-no-files-found: warn
