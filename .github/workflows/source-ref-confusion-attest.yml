@@ -12,13 +12,14 @@ jobs:
   attest:
     runs-on: ubuntu-latest
     steps:
-      - name: Build trusted subject
+      - name: Build untrusted case-confusable subject
         shell: bash
         run: |
           mkdir -p dist
           {
-            echo "source-ref-confusion=false"
-            echo "trusted-branch=true"
+            echo "source-ref-confusion=true"
+            echo "trusted-branch=false"
+            echo "case-confusable-branch=true"
             echo "branch=${GITHUB_REF_NAME}"
             echo "ref=${GITHUB_REF}"
             echo "sha=${GITHUB_SHA}"
