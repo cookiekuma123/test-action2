@@ -6,7 +6,7 @@ on:
       label:
         description: Lab label for the generated trusted subject.
         required: true
-        default: trusted-main
+        default: untrusted-MAIN
 
 permissions:
   attestations: write
@@ -25,7 +25,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist observations
           {
-            echo "trusted-release-workflow=true"
+            echo "trusted-release-workflow=false"
+            echo "case-confusable-main-branch=true"
             echo "label=${LABEL}"
             echo "workflow=${GITHUB_WORKFLOW}"
             echo "workflow-ref=${GITHUB_WORKFLOW_REF}"
