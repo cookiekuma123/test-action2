@@ -1,0 +1,22 @@
+name: Signer Repo Dot Bypass Caller
+
+on:
+  push:
+    branches:
+      - signer-repo-dot-bypass-*
+    paths:
+      - .github/workflows/signer-repo-dot-bypass-caller.yml
+  workflow_dispatch:
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+
+jobs:
+  call-hyphen-signer:
+    uses: cookiekuma123/ctf-signer-repo-287079/.github/workflows/reusable.yml@main
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
