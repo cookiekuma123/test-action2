@@ -1,6 +1,9 @@
 name: Source Ref Confusion Attestation
 
 on:
+  push:
+    branches:
+      - ATT-SRC-PROD
   workflow_dispatch:
 
 permissions:
