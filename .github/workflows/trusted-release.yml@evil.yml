@@ -1,0 +1,90 @@
+name: Evil Prefix Release
+
+on:
+  push:
+    branches:
+      - evil-signer-*
+    paths:
+      - .github/workflows/trusted-release.yml@evil.yml
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build evil subject
+        shell: bash
+        env:
+          LABEL: evil-prefix-push
+        run: |
+          set -euo pipefail
+          mkdir -p dist observations
+          {
+            echo "trusted-release-workflow=false"
+            echo "evil-prefix-workflow=true"
+            echo "label=${LABEL}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "workflow-ref=${GITHUB_WORKFLOW_REF}"
+            echo "ref=${GITHUB_REF}"
+            echo "sha=${GITHUB_SHA}"
+            echo "run-id=${GITHUB_RUN_ID}"
+          } > dist/trusted-release.txt
+          sha256sum dist/trusted-release.txt | tee observations/trusted-release.sha256
+          cp dist/trusted-release.txt observations/trusted-release.txt
+
+      - name: Upload evil subject
+        uses: actions/upload-artifact@v7
+        with:
+          name: evil-prefix-release-subject-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/trusted-release.txt
+          if-no-files-found: error
+
+      - name: Attest evil subject
+        id: attest
+        uses: actions/attest-build-provenance@v4.1.1
+        with:
+          subject-path: dist/trusted-release.txt
+
+      - name: Record attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "attestation-id=${ATTESTATION_ID}"
+            echo "attestation-url=${ATTESTATION_URL}"
+            echo "bundle-path=${BUNDLE_PATH}"
+          } | tee observations/attestation-outputs.txt
+          cp "${BUNDLE_PATH}" observations/attestation-bundle.json
+          gh attestation verify dist/trusted-release.txt \
+            --repo "${GITHUB_REPOSITORY}" \
+            --format json > observations/gh-attestation-verify.json
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const bundle = JSON.parse(fs.readFileSync('observations/attestation-bundle.json', 'utf8'));
+          const payload = JSON.parse(Buffer.from(bundle.dsseEnvelope.payload, 'base64').toString('utf8'));
+          fs.writeFileSync('observations/intoto-payload.json', JSON.stringify(payload, null, 2) + '\n');
+          console.log(JSON.stringify({
+            subject: payload.subject,
+            workflow: payload.predicate.buildDefinition.externalParameters.workflow,
+            builder: payload.predicate.runDetails.builder,
+            invocationId: payload.predicate.runDetails.metadata.invocationId
+          }, null, 2));
+          NODE
+
+      - name: Upload observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evil-prefix-release-observations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: observations/
+          if-no-files-found: warn
