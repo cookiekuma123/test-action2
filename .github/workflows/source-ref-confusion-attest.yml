@@ -1,0 +1,31 @@
+name: Source Ref Confusion Attestation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build trusted subject
+        shell: bash
+        run: |
+          mkdir -p dist
+          {
+            echo "source-ref-confusion=false"
+            echo "trusted-branch=true"
+            echo "branch=${GITHUB_REF_NAME}"
+            echo "ref=${GITHUB_REF}"
+            echo "sha=${GITHUB_SHA}"
+            echo "run-id=${GITHUB_RUN_ID}"
+          } > dist/source-ref-confusion.txt
+
+      - name: Attest subject
+        uses: actions/attest-build-provenance@v4.1.1
+        with:
+          subject-path: dist/source-ref-confusion.txt
