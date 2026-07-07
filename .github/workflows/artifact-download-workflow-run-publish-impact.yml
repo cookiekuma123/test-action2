@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Artifact Download Source Impact
+      - Artifact Download Runtime Upload Source Impact
     types:
       - completed
 
