@@ -1,0 +1,125 @@
+name: Artifact Download Workflow Run Publish Impact
+
+on:
+  workflow_run:
+    workflows:
+      - Artifact Download Source Impact
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: macos-latest
+    steps:
+      - name: Download source-run artifacts
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: artifact-download-impact-${{ github.event.workflow_run.id }}-release-*
+          path: downloaded
+          merge-multiple: false
+
+      - name: Select trusted path for publish
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          export PYTHONIOENCODING=utf-8
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import platform
+          import unicodedata
+
+          source_run_id = os.environ["SOURCE_RUN_ID"]
+          trusted = f"artifact-download-impact-{source_run_id}-release-\u00e9"
+          attacker = f"artifact-download-impact-{source_run_id}-release-e\u0301"
+          root = Path("downloaded")
+          trusted_path = root / trusted / "provenance.txt"
+          attacker_path = root / attacker / "provenance.txt"
+
+          trusted_content = trusted_path.read_text(encoding="utf-8", errors="replace")
+          attacker_content = attacker_path.read_text(encoding="utf-8", errors="replace")
+          samefile = os.path.samefile(trusted_path, attacker_path)
+          entries = sorted(p.name for p in root.iterdir()) if root.exists() else []
+
+          Path("publish").mkdir(exist_ok=True)
+          Path("observations").mkdir(exist_ok=True)
+          selected = (
+              "selected-path=trusted-source-run-artifact/provenance.txt\n"
+              f"source-run-id={source_run_id}\n"
+              f"source-run-url={os.environ['SOURCE_RUN_URL']}\n"
+              f"trusted-artifact-name={trusted}\n"
+              f"attacker-artifact-name={attacker}\n"
+              f"samefile={samefile}\n"
+              "\n"
+              + trusted_content
+          )
+          Path("publish/selected-provenance.txt").write_text(selected, encoding="utf-8")
+
+          observation = {
+              "platform": platform.platform(),
+              "sourceRunId": source_run_id,
+              "sourceRunUrl": os.environ["SOURCE_RUN_URL"],
+              "entries": entries,
+              "trustedName": trusted,
+              "attackerName": attacker,
+              "rawEqual": trusted == attacker,
+              "nfcEqual": unicodedata.normalize("NFC", trusted) == unicodedata.normalize("NFC", attacker),
+              "nfkcEqual": unicodedata.normalize("NFKC", trusted) == unicodedata.normalize("NFKC", attacker),
+              "trustedPathExists": trusted_path.exists(),
+              "attackerPathExists": attacker_path.exists(),
+              "samefile": samefile,
+              "trustedReadContent": trusted_content,
+              "attackerReadContent": attacker_content,
+              "publishedAssetContent": selected,
+          }
+          Path("observations/workflow-run-publish-impact.json").write_text(
+              json.dumps(observation, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(observation, ensure_ascii=False, sort_keys=True))
+
+          if "source=attacker-source-run" not in trusted_content:
+              raise SystemExit("trusted path did not resolve to attacker content")
+          PY
+
+      - name: Create release from selected trusted path
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: artifact-download-workflow-run-impact-${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Privileged workflow_run publish impact lab"
+            echo
+            echo "Source run: ${{ github.event.workflow_run.html_url }}"
+            echo "The attached asset was read from the trusted artifact path after download-artifact."
+          } > observations/release-notes.md
+          gh release create "$TAG" publish/selected-provenance.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Artifact download workflow_run impact ${{ github.event.workflow_run.id }}" \
+            --notes-file observations/release-notes.md
+          gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName \
+            --jq '{tagName: .tagName, url: .url}' > observations/release.json
+
+      - name: Upload workflow_run impact observations
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-download-workflow-run-publish-impact-${{ github.event.workflow_run.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: observations
+          include-hidden-files: true

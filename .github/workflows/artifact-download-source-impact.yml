@@ -1,0 +1,59 @@
+name: Artifact Download Source Impact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trusted:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare trusted payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p trusted-payload
+          {
+            echo "source=trusted-source-run"
+            echo "artifact-name=artifact-download-impact-${GITHUB_RUN_ID}-release-é"
+            echo "run-id=${GITHUB_RUN_ID}"
+          } > trusted-payload/provenance.txt
+
+      - name: Upload trusted artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-download-impact-${{ github.run_id }}-release-é
+          path: trusted-payload
+          include-hidden-files: true
+
+  attacker:
+    needs: trusted
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare confusable payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p attacker-payload
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          run_id = os.environ["GITHUB_RUN_ID"]
+          name = f"artifact-download-impact-{run_id}-release-e\u0301"
+          Path("attacker-payload/provenance.txt").write_text(
+              f"source=attacker-source-run\nartifact-name={name}\nrun-id={run_id}\n",
+              encoding="utf-8",
+          )
+          Path("attacker-payload/padding.bin").write_bytes(b"A" * 4 * 1024 * 1024)
+          PY
+
+      - name: Upload low-permission confusable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-download-impact-${{ github.run_id }}-release-é
+          path: attacker-payload
+          include-hidden-files: true
+          compression-level: 0
