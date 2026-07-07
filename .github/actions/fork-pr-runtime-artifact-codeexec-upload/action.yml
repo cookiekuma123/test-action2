@@ -1,0 +1,5 @@
+name: Fork PR Runtime Artifact CodeExec Upload
+description: Benign local action skeleton used by the fork-PR artifact collision lab.
+runs:
+  using: node24
+  main: index.mjs

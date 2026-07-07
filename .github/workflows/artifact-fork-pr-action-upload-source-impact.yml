@@ -1,0 +1,50 @@
+name: Artifact Fork PR Action Upload Source Impact
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  pr-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare trusted deploy artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p trusted-deploy
+          cat > trusted-deploy/deploy.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p observations
+          {
+            echo "source=trusted-deploy-script"
+            echo "method=trusted-upload-artifact"
+            echo "run-id=${GITHUB_RUN_ID}"
+            echo "event=${GITHUB_EVENT_NAME}"
+          } > observations/fork-pr-codeexec-proof.txt
+          SH
+          chmod +x trusted-deploy/deploy.sh
+
+      - name: Upload trusted deploy artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-fork-pr-codeexec-impact-${{ github.run_id }}-deploy-é
+          path: trusted-deploy
+          include-hidden-files: true
+
+      - name: Checkout PR head code
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run PR-provided local action
+        uses: ./.github/actions/fork-pr-runtime-artifact-codeexec-upload
