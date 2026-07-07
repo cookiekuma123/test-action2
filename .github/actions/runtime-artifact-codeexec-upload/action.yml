@@ -1,0 +1,5 @@
+name: Runtime Artifact CodeExec Upload
+description: Uploads a confusable deploy-script artifact from action code.
+runs:
+  using: node24
+  main: index.mjs

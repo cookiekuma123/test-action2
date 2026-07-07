@@ -1,0 +1,107 @@
+name: Artifact CodeExec Workflow Run Impact
+
+on:
+  workflow_run:
+    workflows:
+      - Artifact CodeExec Action Upload Source Impact
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  codeexec:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: macos-latest
+    steps:
+      - name: Download source-run deploy artifacts
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: artifact-codeexec-impact-${{ github.event.workflow_run.id }}-deploy-*
+          path: downloaded
+          merge-multiple: false
+
+      - name: Execute trusted deploy artifact path
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          TRUSTED_NAME: artifact-codeexec-impact-${{ github.event.workflow_run.id }}-deploy-é
+          ATTACKER_NAME: artifact-codeexec-impact-${{ github.event.workflow_run.id }}-deploy-é
+        run: |
+          set -euo pipefail
+          export PYTHONIOENCODING=utf-8
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import unicodedata
+
+          root = Path("downloaded")
+          trusted = os.environ["TRUSTED_NAME"]
+          attacker = os.environ["ATTACKER_NAME"]
+          trusted_script = root / trusted / "deploy.sh"
+          attacker_script = root / attacker / "deploy.sh"
+          before = {
+              "entriesBeforeExec": sorted(p.name for p in root.iterdir()) if root.exists() else [],
+              "trustedName": trusted,
+              "attackerName": attacker,
+              "rawEqual": trusted == attacker,
+              "nfcEqual": unicodedata.normalize("NFC", trusted) == unicodedata.normalize("NFC", attacker),
+              "nfkcEqual": unicodedata.normalize("NFKC", trusted) == unicodedata.normalize("NFKC", attacker),
+              "trustedScriptExists": trusted_script.exists(),
+              "attackerScriptExists": attacker_script.exists(),
+              "samefile": os.path.samefile(trusted_script, attacker_script) if trusted_script.exists() and attacker_script.exists() else None,
+              "trustedScriptHead": trusted_script.read_text(encoding="utf-8", errors="replace")[:300] if trusted_script.exists() else None,
+          }
+          Path("observations").mkdir(exist_ok=True)
+          Path("observations/codeexec-before.json").write_text(
+              json.dumps(before, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(before, ensure_ascii=False, sort_keys=True))
+          PY
+
+          bash "downloaded/${TRUSTED_NAME}/deploy.sh"
+
+          test -f publish/codeexec-proof.txt
+          grep -q 'source=attacker-deploy-script' publish/codeexec-proof.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+          import platform
+
+          before = json.loads(Path("observations/codeexec-before.json").read_text(encoding="utf-8"))
+          proof = Path("publish/codeexec-proof.txt").read_text(encoding="utf-8")
+          release = json.loads(Path("observations/codeexec-release.json").read_text(encoding="utf-8"))
+          after = {
+              **before,
+              "platform": platform.platform(),
+              "sourceRunId": os.environ["SOURCE_RUN_ID"],
+              "sourceRunUrl": os.environ["SOURCE_RUN_URL"],
+              "executedTrustedPath": f"downloaded/{os.environ['TRUSTED_NAME']}/deploy.sh",
+              "proof": proof,
+              "release": release,
+          }
+          Path("observations/codeexec-impact.json").write_text(
+              json.dumps(after, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(after, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Upload codeexec observations
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-codeexec-workflow-run-impact-${{ github.event.workflow_run.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: observations
+          include-hidden-files: true
