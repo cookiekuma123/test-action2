@@ -1,0 +1,39 @@
+name: Artifact Download Action Upload Source Impact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trusted:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare trusted payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p trusted-payload
+          {
+            echo "source=trusted-source-run"
+            echo "artifact-name=artifact-download-impact-${GITHUB_RUN_ID}-release-é"
+            echo "run-id=${GITHUB_RUN_ID}"
+          } > trusted-payload/provenance.txt
+
+      - name: Upload trusted artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-download-impact-${{ github.run_id }}-release-é
+          path: trusted-payload
+          include-hidden-files: true
+
+  attacker-action-upload:
+    needs: trusted
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout action code
+        uses: actions/checkout@v5
+
+      - name: Upload confusable artifact from action code
+        uses: ./.github/actions/runtime-artifact-upload

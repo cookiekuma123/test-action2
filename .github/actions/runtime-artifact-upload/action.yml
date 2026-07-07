@@ -1,0 +1,5 @@
+name: Runtime Artifact Upload
+description: Uploads a confusable artifact from action code using the Actions runtime artifact service.
+runs:
+  using: node24
+  main: index.mjs

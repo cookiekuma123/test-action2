@@ -5,6 +5,7 @@ on:
     workflows:
       - Artifact Download Source Impact
       - Artifact Download Runtime Upload Source Impact
+      - Artifact Download Action Upload Source Impact
     types:
       - completed
 
