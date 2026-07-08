@@ -1,0 +1,302 @@
+name: Artifact Internal Path Workflow Run Impact Stable
+
+on:
+  workflow_run:
+    workflows:
+      - Artifact Internal Path Source Impact Stable
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: artifact-internal-path-stable-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  internal-path-impact-stable:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve exact source artifact metadata
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          mkdir -p observations
+          ARTIFACT_NAME="artifact-internal-path-stable-${SOURCE_RUN_ID}"
+          JSON="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?name=${ARTIFACT_NAME}")"
+          ARTIFACT_META="$(JSON="$JSON" ARTIFACT_NAME="$ARTIFACT_NAME" python3 - <<'PY'
+          import json
+          import os
+
+          body = json.loads(os.environ["JSON"])
+          artifacts = [a for a in body.get("artifacts", []) if a.get("name") == os.environ["ARTIFACT_NAME"]]
+          if len(artifacts) != 1:
+              raise SystemExit(f"expected exactly one artifact named {os.environ['ARTIFACT_NAME']}, got {len(artifacts)}")
+          artifact = artifacts[0]
+          print(json.dumps({
+              "id": artifact["id"],
+              "name": artifact["name"],
+              "size_in_bytes": artifact.get("size_in_bytes"),
+              "expired": artifact.get("expired"),
+              "created_at": artifact.get("created_at"),
+              "updated_at": artifact.get("updated_at"),
+              "archive_download_url": artifact.get("archive_download_url"),
+          }, sort_keys=True))
+          PY
+          )"
+          ARTIFACT_ID="$(ARTIFACT_META="$ARTIFACT_META" python3 - <<'PY'
+          import json
+          import os
+          print(json.loads(os.environ["ARTIFACT_META"])["id"])
+          PY
+          )"
+          printf '%s\n' "$ARTIFACT_META" > observations/source-artifact-metadata.json
+          {
+            echo "artifact_name=${ARTIFACT_NAME}"
+            echo "artifact_id=${ARTIFACT_ID}"
+          } >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}"
+          echo "artifact_id=${ARTIFACT_ID}"
+          cat observations/source-artifact-metadata.json
+
+      - name: Download exact artifact name
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: downloaded-name
+
+      - name: Download exact artifact ID first attempt
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.meta.outputs.artifact_id }}
+          path: downloaded-id-first
+
+      - name: Download exact artifact ID repeat attempt
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.meta.outputs.artifact_id }}
+          path: downloaded-id-repeat
+
+      - name: Download exact artifact ID without decompression
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.meta.outputs.artifact_id }}
+          path: downloaded-raw
+          skip-decompress: true
+
+      - name: Inspect and execute trusted internal paths repeatedly
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          PRIVILEGED_RUN_ID: ${{ github.run_id }}
+          ARTIFACT_NAME: ${{ steps.meta.outputs.artifact_name }}
+          ARTIFACT_ID: ${{ steps.meta.outputs.artifact_id }}
+          TRUSTED_EXEC_REL: bin/deploy-ff.sh
+          ATTACKER_EXEC_REL: bin/deploy-ﬀ.sh
+          TRUSTED_CHUNK_REL: dist/release-é.txt
+          ATTACKER_CHUNK_REL: dist/release-é.txt
+        run: |
+          set -euo pipefail
+          export PYTHONIOENCODING=utf-8
+
+          inspect_root() {
+            local root="$1"
+            local mode="$2"
+            DOWNLOAD_ROOT="$root" DOWNLOAD_MODE="$mode" python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+          import platform
+          import unicodedata
+
+          root = Path(os.environ["DOWNLOAD_ROOT"])
+          mode = os.environ["DOWNLOAD_MODE"]
+          trusted_exec_rel = os.environ["TRUSTED_EXEC_REL"]
+          attacker_exec_rel = os.environ["ATTACKER_EXEC_REL"]
+          trusted_chunk_rel = os.environ["TRUSTED_CHUNK_REL"]
+          attacker_chunk_rel = os.environ["ATTACKER_CHUNK_REL"]
+
+          def file_info(path):
+              if not path.exists():
+                  return {"exists": False}
+              data = path.read_bytes()
+              stat = path.stat()
+              return {
+                  "exists": True,
+                  "isFile": path.is_file(),
+                  "size": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "dev": stat.st_dev,
+                  "ino": stat.st_ino,
+                  "contentHead": data[:500].decode("utf-8", errors="replace"),
+              }
+
+          trusted_exec = root / trusted_exec_rel
+          attacker_exec = root / attacker_exec_rel
+          trusted_chunk = root / trusted_chunk_rel
+          attacker_chunk = root / attacker_chunk_rel
+
+          entries = []
+          if root.exists():
+              for path in sorted(root.rglob("*")):
+                  rel = str(path.relative_to(root))
+                  entries.append({
+                      "path": rel,
+                      "isFile": path.is_file(),
+                      "nfc": unicodedata.normalize("NFC", rel),
+                      "nfkc": unicodedata.normalize("NFKC", rel),
+                  })
+
+          observation = {
+              "mode": mode,
+              "platform": platform.platform(),
+              "sourceRunId": os.environ["SOURCE_RUN_ID"],
+              "sourceRunUrl": os.environ["SOURCE_RUN_URL"],
+              "privilegedRunId": os.environ["PRIVILEGED_RUN_ID"],
+              "artifactName": os.environ["ARTIFACT_NAME"],
+              "artifactId": os.environ["ARTIFACT_ID"],
+              "entries": entries,
+              "trustedExecRel": trusted_exec_rel,
+              "attackerExecRel": attacker_exec_rel,
+              "execRawEqual": trusted_exec_rel == attacker_exec_rel,
+              "execNfcEqual": unicodedata.normalize("NFC", trusted_exec_rel) == unicodedata.normalize("NFC", attacker_exec_rel),
+              "execNfkcEqual": unicodedata.normalize("NFKC", trusted_exec_rel) == unicodedata.normalize("NFKC", attacker_exec_rel),
+              "trustedExec": file_info(trusted_exec),
+              "attackerExec": file_info(attacker_exec),
+              "execSamefile": os.path.samefile(trusted_exec, attacker_exec) if trusted_exec.exists() and attacker_exec.exists() else None,
+              "trustedChunkRel": trusted_chunk_rel,
+              "attackerChunkRel": attacker_chunk_rel,
+              "chunkRawEqual": trusted_chunk_rel == attacker_chunk_rel,
+              "chunkNfcEqual": unicodedata.normalize("NFC", trusted_chunk_rel) == unicodedata.normalize("NFC", attacker_chunk_rel),
+              "chunkNfkcEqual": unicodedata.normalize("NFKC", trusted_chunk_rel) == unicodedata.normalize("NFKC", attacker_chunk_rel),
+              "trustedChunk": file_info(trusted_chunk),
+              "attackerChunk": file_info(attacker_chunk),
+              "chunkSamefile": os.path.samefile(trusted_chunk, attacker_chunk) if trusted_chunk.exists() and attacker_chunk.exists() else None,
+          }
+
+          Path("observations").mkdir(exist_ok=True)
+          Path(f"observations/internal-path-stable-{mode}-before.json").write_text(
+              json.dumps(observation, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(observation, ensure_ascii=False, sort_keys=True))
+
+          errors = []
+          trusted_head = observation["trustedExec"].get("contentHead") or ""
+          trusted_chunk_head = observation["trustedChunk"].get("contentHead") or ""
+          if observation["execSamefile"] is not True:
+              errors.append("trusted executable path and attacker alias are not the same file")
+          if "source=attacker-stable-internal-path-deploy-script" not in trusted_head:
+              errors.append("trusted executable path did not read attacker script")
+          if observation["chunkSamefile"] is not True:
+              errors.append("trusted chunk path and attacker alias are not the same file")
+          if "source=attacker-stable-nfc-whole-path" not in trusted_chunk_head:
+              errors.append("trusted chunk path did not read attacker content")
+          if errors:
+              raise SystemExit("; ".join(errors))
+          PY
+          }
+
+          execute_root() {
+            local root="$1"
+            local mode="$2"
+            rm -rf publish
+            DOWNLOAD_ROOT="$root" DOWNLOAD_MODE="$mode" \
+              bash "${root}/${TRUSTED_EXEC_REL}"
+
+            test -f "publish/internal-path-stable-${mode}-codeexec-proof.txt"
+            grep -q 'source=attacker-stable-internal-path-deploy-script' "publish/internal-path-stable-${mode}-codeexec-proof.txt"
+
+            DOWNLOAD_ROOT="$root" DOWNLOAD_MODE="$mode" python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          mode = os.environ["DOWNLOAD_MODE"]
+          before = json.loads(Path(f"observations/internal-path-stable-{mode}-before.json").read_text(encoding="utf-8"))
+          proof = Path(f"publish/internal-path-stable-{mode}-codeexec-proof.txt").read_text(encoding="utf-8")
+          release = json.loads(Path(f"observations/internal-path-stable-{mode}-release.json").read_text(encoding="utf-8"))
+          before["proof"] = proof
+          before["release"] = release
+          before["executedTrustedPath"] = f"{os.environ['DOWNLOAD_ROOT']}/{os.environ['TRUSTED_EXEC_REL']}"
+          Path(f"observations/internal-path-stable-{mode}-impact.json").write_text(
+              json.dumps(before, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(before, ensure_ascii=False, sort_keys=True))
+          PY
+          }
+
+          inspect_root downloaded-name name
+          execute_root downloaded-name name
+
+          inspect_root downloaded-id-first id-first
+          execute_root downloaded-id-first id-first
+
+          inspect_root downloaded-id-repeat id-repeat
+          execute_root downloaded-id-repeat id-repeat
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import os
+
+          root = Path("downloaded-raw")
+          trusted = root / os.environ["TRUSTED_EXEC_REL"]
+          entries = []
+          if root.exists():
+              for path in sorted(root.rglob("*")):
+                  rel = str(path.relative_to(root))
+                  item = {"path": rel, "isFile": path.is_file()}
+                  if path.is_file():
+                      item["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                      item["size"] = path.stat().st_size
+                  entries.append(item)
+          raw = {
+              "mode": "skip-decompress",
+              "entries": entries,
+              "trustedExecExists": trusted.exists(),
+              "note": "skip-decompress downloads the artifact blob without extracting internal paths",
+          }
+          Path("observations/internal-path-stable-skip-decompress-control.json").write_text(
+              json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(raw, ensure_ascii=False, sort_keys=True))
+          if trusted.exists():
+              raise SystemExit("skip-decompress unexpectedly extracted internal path")
+          if len(entries) != 1 or not entries[0]["path"].endswith(".zip"):
+              raise SystemExit(f"unexpected skip-decompress entries: {entries}")
+          PY
+
+      - name: Upload stable internal path impact observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-internal-path-stable-observations-${{ github.event.workflow_run.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: observations
+          include-hidden-files: true
