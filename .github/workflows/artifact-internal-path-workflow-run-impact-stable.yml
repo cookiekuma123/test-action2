@@ -76,23 +76,50 @@ jobs:
           name: ${{ steps.meta.outputs.artifact_name }}
           path: downloaded-name
 
-      - name: Download exact artifact ID first attempt
+      - name: Download exact artifact ID attempt 1
         uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
           artifact-ids: ${{ steps.meta.outputs.artifact_id }}
-          path: downloaded-id-first
+          path: downloaded-id-1
 
-      - name: Download exact artifact ID repeat attempt
+      - name: Download exact artifact ID attempt 2
         uses: actions/download-artifact@v8
         with:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
           artifact-ids: ${{ steps.meta.outputs.artifact_id }}
-          path: downloaded-id-repeat
+          path: downloaded-id-2
+
+      - name: Download exact artifact ID attempt 3
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.meta.outputs.artifact_id }}
+          path: downloaded-id-3
+
+      - name: Download exact artifact ID attempt 4
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.meta.outputs.artifact_id }}
+          path: downloaded-id-4
+
+      - name: Download exact artifact ID attempt 5
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.meta.outputs.artifact_id }}
+          path: downloaded-id-5
 
       - name: Download exact artifact ID without decompression
         uses: actions/download-artifact@v8
@@ -250,14 +277,28 @@ jobs:
           PY
           }
 
-          inspect_root downloaded-name name
-          execute_root downloaded-name name
+          name_success=0
+          id_success=0
+          id_attempts=0
 
-          inspect_root downloaded-id-first id-first
-          execute_root downloaded-id-first id-first
+          if inspect_root downloaded-name name; then
+            execute_root downloaded-name name
+            name_success=1
+          else
+            echo "name mode did not materialize attacker content in this attempt"
+          fi
 
-          inspect_root downloaded-id-repeat id-repeat
-          execute_root downloaded-id-repeat id-repeat
+          for attempt in 1 2 3 4 5; do
+            id_attempts=$((id_attempts + 1))
+            mode="id-${attempt}"
+            root="downloaded-id-${attempt}"
+            if inspect_root "$root" "$mode"; then
+              execute_root "$root" "$mode"
+              id_success=$((id_success + 1))
+            else
+              echo "${mode} did not materialize attacker content in this attempt"
+            fi
+          done
 
           python3 - <<'PY'
           from pathlib import Path
@@ -291,6 +332,28 @@ jobs:
               raise SystemExit("skip-decompress unexpectedly extracted internal path")
           if len(entries) != 1 or not entries[0]["path"].endswith(".zip"):
               raise SystemExit(f"unexpected skip-decompress entries: {entries}")
+          PY
+
+          NAME_SUCCESS="$name_success" ID_SUCCESS="$id_success" ID_ATTEMPTS="$id_attempts" python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import os
+
+          summary = {
+              "nameSuccess": int(os.environ["NAME_SUCCESS"]),
+              "idSuccess": int(os.environ["ID_SUCCESS"]),
+              "idAttempts": int(os.environ["ID_ATTEMPTS"]),
+              "requirement": "nameSuccess >= 1 and idSuccess >= 1",
+          }
+          Path("observations/internal-path-stable-summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+          if summary["nameSuccess"] < 1:
+              raise SystemExit("exact-name download did not produce attacker execution in this run")
+          if summary["idSuccess"] < 1:
+              raise SystemExit("no exact-artifact-ID download attempt produced attacker execution in this run")
           PY
 
       - name: Upload stable internal path impact observations
