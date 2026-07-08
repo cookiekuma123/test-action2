@@ -80,9 +80,9 @@ jobs:
             --jq '{tagName: .tagName, url: .url}' > "observations/internal-path-stable-${DOWNLOAD_MODE}-release.json"
           """)
 
-          # The attacker aliases are intentionally listed after the trusted paths.
-          # The upload step below also lists paths in this order to make zip entry
-          # materialization deterministic for reproduction.
+          # The attacker aliases are intentionally created after the trusted paths.
+          # The upload action receives the payload directory, matching the original
+          # successful live PoC shape.
           payload = [
               ("bin/deploy-ff.sh", "trusted executable path", trusted_deploy),
               ("bin/deploy-\ufb00.sh", "attacker executable path; NFKC-equivalent to trusted path", attacker_deploy),
@@ -97,7 +97,7 @@ jobs:
 
           manifest = {
               "purpose": "Stable reproduction for single-artifact internal path Unicode normalization collision",
-              "expectedUploadOrder": [rel for rel, _, _ in payload] + ["MANIFEST.json"],
+              "payloadCreationOrder": [rel for rel, _, _ in payload] + ["MANIFEST.json"],
               "pairs": {
                   "executable": {
                       "trusted": "bin/deploy-ff.sh",
@@ -129,7 +129,7 @@ jobs:
           manifest_path = root / "MANIFEST.json"
           manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-          for rel in manifest["expectedUploadOrder"]:
+          for rel in manifest["payloadCreationOrder"]:
               path = root / rel
               print(json.dumps({
                   "path": rel,
@@ -144,14 +144,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: artifact-internal-path-stable-${{ github.run_id }}
-          path: |
-            payload/bin/deploy-ff.sh
-            payload/bin/deploy-ﬀ.sh
-            payload/dist/release-é.txt
-            payload/dist/release-é.txt
-            payload/MANIFEST.json
+          path: payload
           include-hidden-files: true
-          compression-level: 0
 
       - name: Print artifact metadata
         shell: bash
